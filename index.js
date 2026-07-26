@@ -1,6 +1,5 @@
 const axios = require('axios');
 const express = require('express');
-const readline = require('readline');
 const { wrapper } = require('axios-cookiejar-support');
 const { CookieJar } = require('tough-cookie');
 
@@ -16,7 +15,7 @@ const GETNEWRESULT_URL = `${BASE}/baccarat/getnewresult`;
 const USERNAME = "Hoang2286";
 const PASSWORD = "hoang2010";
 
-// Nếu web dùng Mã Bảo Mật cố định, điền vào đây. Nếu thay đổi liên tục, code sẽ hỏi từ Terminal.
+// Mã bảo mật mặc định (có thể đổi qua API)
 let SECURITY_CODE = ""; 
 
 const jar = new CookieJar();
@@ -27,25 +26,14 @@ const session = wrapper(axios.create({
     maxRedirects: 5,
     headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
         'Accept-Language': 'vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7'
     }
 }));
 
 let baccaratData = [];
 let lastUpdate = null;
-
-// Hàm hỗ trợ nhập mã bảo mật từ Terminal/Console nếu cần
-function askCaptcha(questionText) {
-    const rl = readline.createInterface({
-        input: process.stdin,
-        output: process.stdout
-    });
-    return new Promise(resolve => rl.question(questionText, ans => {
-        rl.close();
-        resolve(ans.trim());
-    }));
-}
+let isLogined = false;
 
 // Bóc tách Form & URL ảnh Mã Bảo Mật
 function parseLoginForm(html) {
@@ -65,7 +53,6 @@ function parseLoginForm(html) {
         }
     }
 
-    // Tìm URL ảnh Captcha/Mã bảo mật
     const captchaMatch = html.match(/src=["']([^"']*captcha[^"']*)["']/i) || 
                          html.match(/src=["']([^"']*code[^"']*)["']/i) ||
                          html.match(/src=["']([^"']*security[^"']*)["']/i);
@@ -83,43 +70,28 @@ function parseLoginForm(html) {
 // ======================
 async function login() {
     try {
-        console.log('[1] Lấy Cookie khởi tạo từ Room...');
+        console.log('[1] Khởi tạo Session từ Room...');
         await session.get(BASE);
 
-        console.log('[2] Truy cập trang Login...');
-        const getResp = await session.get(LOGIN_URL, {
-            headers: { 'Referer': BASE }
-        });
+        console.log('[2] Lấy thông tin trang Login...');
+        const getResp = await session.get(LOGIN_URL, { headers: { 'Referer': BASE } });
 
         const { inputs, captchaUrl } = parseLoginForm(getResp.data);
 
         if (captchaUrl) {
-            console.log(`\n[!] PHÁT HIỆN MÃ BẢO MẬT! Đường dẫn ảnh: ${captchaUrl}`);
-        }
-
-        // Nếu chưa cấu hình SECURITY_CODE sẵn và phát hiện trang cần nhập mã
-        if (!SECURITY_CODE) {
-            // Trường hợp chạy trên máy cục bộ (Local Terminal)
-            if (process.stdin.isTTY) {
-                SECURITY_CODE = await askCaptcha('👉 Hãy nhập Mã Bảo Mật hiển thị trên trang: ');
-            } else {
-                console.warn('[!] Đang chạy trên Render/Server Cloud: Vui lòng gán giá trị Mã Bảo Mật cố định vào biến SECURITY_CODE trong code nếu có!');
-            }
+            console.log(`[!] Ảnh Mã bảo mật: ${captchaUrl}`);
         }
 
         const formData = new URLSearchParams();
         
-        // Đổ toàn bộ hidden input từ web
         for (const [key, val] of Object.entries(inputs)) {
             formData.append(key, val);
         }
 
-        // Gán Tài khoản, Mật khẩu & Mã bảo mật vào Form
         formData.set('username', USERNAME);
         formData.set('password', PASSWORD);
 
         if (SECURITY_CODE) {
-            // Gửi mã vào tất cả các trường tên mã bảo mật phổ biến
             formData.set('captcha', SECURITY_CODE);
             formData.set('security_code', SECURITY_CODE);
             formData.set('code', SECURITY_CODE);
@@ -132,7 +104,7 @@ async function login() {
             'Content-Type': 'application/x-www-form-urlencoded'
         };
 
-        console.log('[3] Gửi Request Đăng Nhập kèm Mã Bảo Mật...');
+        console.log('[3] Gửi Request Đăng Nhập...');
         const loginResp = await session.post(LOGIN_URL, formData.toString(), { headers });
 
         const finalUrl = loginResp.request?.res?.responseUrl || '';
@@ -140,21 +112,30 @@ async function login() {
 
         if (finalUrl.includes('Room') || finalUrl.includes('lobby') || !isStillLogin) {
             console.log('[OK] ĐĂNG NHẬP THÀNH CÔNG!');
+            isLogined = true;
             return true;
         } else {
-            console.error('[X] Đăng nhập thất bại: Sai Tài khoản, Mật khẩu hoặc Mã bảo mật!');
+            console.error('[X] Đăng nhập thất bại (Có thể do sai Mã bảo mật).');
+            isLogined = false;
             return false;
         }
     } catch (error) {
         console.error('Lỗi Login:', error.message);
+        isLogined = false;
         return false;
     }
 }
 
 // ======================
-// CÀO DỮ LIỆU TẤT CẢ CÁC BÀN
+// CÀO DỮ LIỆU
 // ======================
 async function fetchBaccaratData() {
+    if (!isLogined) {
+        const ok = await login();
+        if (!ok) return [];
+        await session.get(LOBBY_URL, { headers: { 'Referer': BASE } });
+    }
+
     try {
         const cookies = await jar.getCookies(BASE_HOST);
         const xsrfCookie = cookies.find(c => c.key === 'XSRF-TOKEN');
@@ -174,6 +155,13 @@ async function fetchBaccaratData() {
 
         const resp = await session.post(GETNEWRESULT_URL, formData.toString(), { headers });
         let resData = resp.data;
+
+        // Nếu hết session bị đẩy về HTML -> Login lại ngầm
+        if (typeof resData === 'string' && resData.trim().startsWith('<')) {
+            console.log('[!] Hết phiên làm việc, tiến hành Đăng nhập lại...');
+            isLogined = false;
+            return [];
+        }
 
         if (typeof resData === 'string') {
             try { resData = JSON.parse(resData); } catch (e) {}
@@ -197,7 +185,7 @@ async function fetchBaccaratData() {
                 result: item.result || item.history || item.data || '',
                 shoeId: item.shoeId || item.shoe_id || '',
                 round: item.round || item.roundNo || '',
-                raw: item // Giữ toàn bộ thông tin gốc của bàn
+                raw: item
             }));
             lastUpdate = new Date().toISOString();
         }
@@ -227,47 +215,46 @@ app.use((req, res, next) => {
     next();
 });
 
+// Link lấy danh sách bàn
 app.get('/api/baccarat', (req, res) => {
     res.json({
         success: true,
         total: baccaratData.length,
         lastUpdate: lastUpdate,
+        isLogined: isLogined,
         data: baccaratData
     });
 });
 
-app.get('/api/baccarat/:table', (req, res) => {
-    const tableName = String(req.params.table).toLowerCase();
-    const found = baccaratData.find(item => String(item.table).toLowerCase() === tableName);
-    if (found) res.json({ success: true, data: found });
-    else res.status(404).json({ success: false, message: `Không tìm thấy bàn ${req.params.table}` });
+// Link cập nhật mã bảo mật ngay trên trình duyệt di động: /set-code/1234
+app.get('/set-code/:code', async (req, res) => {
+    SECURITY_CODE = req.params.code;
+    console.log(`[!] Đã cập nhật Mã Bảo Mật mới: ${SECURITY_CODE}`);
+    isLogined = false; // Bắt buộc login lại với mã mới
+    const ok = await login();
+    if (ok) {
+        res.json({ success: true, message: `Đã cập nhật Mã Bảo Mật thành: ${SECURITY_CODE} và Đăng nhập thành công!` });
+    } else {
+        res.json({ success: false, message: `Đã nhập Mã Bảo Mật: ${SECURITY_CODE} nhưng Đăng nhập thất bại. Kiểm tra lại mã!` });
+    }
 });
 
 // ======================
 // KHỞI ĐỘNG
 // ======================
-async function start() {
-    console.log('========================================');
-    console.log('BACCARAT CRAWLER SERVER');
-    console.log('========================================');
-
-    const ok = await login();
-    if (!ok) {
-        console.error('[X] Đăng nhập thất bại. Dừng chương trình.');
-        process.exit(1);
-    }
-
-    await session.get(LOBBY_URL, { headers: { 'Referer': BASE } });
-
-    console.log('[4] Tiến hành lấy dữ liệu tất cả các bàn...');
-    const data = await fetchBaccaratData();
-    console.log(`[OK] Đã lấy thành công toàn bộ ${data.length} bàn.`);
-
-    autoUpdate();
-
+function start() {
     const PORT = process.env.PORT || 5000;
+    
+    // Mở cổng Express ngay lập tức để Render KHÔNG bị Exit
     app.listen(PORT, '0.0.0.0', () => {
-        console.log(`🚀 API ready: http://localhost:${PORT}/api/baccarat`);
+        console.log(`========================================`);
+        console.log(`🚀 SERVER ĐÃ MỞ TẠI PORT: ${PORT}`);
+        console.log(`👉 API Data: http://localhost:${PORT}/api/baccarat`);
+        console.log(`👉 Set Code: http://localhost:${PORT}/set-code/MA_BAO_MAT`);
+        console.log(`========================================`);
+        
+        // Chạy ngầm tiến trình đăng nhập & cào dữ liệu
+        autoUpdate();
     });
 }
 
