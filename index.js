@@ -8,28 +8,24 @@ const { CookieJar } = require('tough-cookie');
 // ======================
 const BASE_HOST = "http://hackbacarat.com";
 const BASE = `${BASE_HOST}/Formula/Room?appId=2`;
-const HOME_URL = `${BASE_HOST}/Home/Index`;
 const LOGIN_URL = `${BASE}/login`;
 const LOBBY_URL = `${BASE}/ae/lobby`;
 const GETNEWRESULT_URL = `${BASE}/baccarat/getnewresult`;
 
-// Tài khoản & Mật khẩu mới
 const USERNAME = "Hoang2286";
 const PASSWORD = "hoang2010";
-const SECURITY_CODE = ""; 
 
-// Khởi tạo Cookie Jar
 const jar = new CookieJar();
 
-// Khởi tạo Session Axios (Không truyền agent để tránh đụng độ thư viện)
 const session = wrapper(axios.create({
-    baseURL: BASE,
     timeout: 30000,
     jar,
+    maxRedirects: 5, // Tự động đi theo Redirect 302 của Server
     headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-        'Accept-Language': 'vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7'
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+        'Accept-Language': 'vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7',
+        'Connection': 'keep-alive'
     }
 }));
 
@@ -37,72 +33,59 @@ let baccaratData = [];
 let lastUpdate = null;
 
 // ======================
-// LẤY CSRF TOKEN & CAPTCHA
+// LẤY CSRF TOKEN VÀ FIELD NAME ĐĂNG NHẬP
 // ======================
-function extractSecurityTokens(html) {
-    if (typeof html !== 'string') return { token: null, captchaUrl: null };
+function extractFormInputs(html) {
+    if (typeof html !== 'string') return {};
     
-    const tokenMatch = html.match(/<meta\s+name="csrf-token"\s+content="([^"]+)"/) || 
-                       html.match(/name="_token"\s+value="([^"]+)"/);
+    // Tìm CSRF Token trong Meta hoặc Input hidden
+    const tokenMatch = html.match(/<meta\s+name="csrf-token"\s+content="([^"]+)"/i) || 
+                       html.match(/name="_token"\s+value="([^"]+)"/i);
     
-    const captchaMatch = html.match(/src="([^"]*captcha[^"]*)"/i) || 
-                         html.match(/src="([^"]*security[^"]*)"/i);
-
     return {
-        token: tokenMatch ? tokenMatch[1] : null,
-        captchaUrl: captchaMatch ? captchaMatch[1] : null
+        token: tokenMatch ? tokenMatch[1] : ''
     };
 }
 
 // ======================
-// QUY TRÌNH ĐĂNG NHẬP
+// QUY TRÌNH ĐĂNG NHẬP CHUẨN
 // ======================
 async function login() {
     try {
-        console.log('[1] Truy cập trang chủ Home/Index...');
-        await session.get(HOME_URL);
-        
-        console.log('[2] Truy cập trang Login...');
-        const getResp = await session.get(LOGIN_URL, {
-            headers: { 'Referer': HOME_URL }
-        });
+        console.log('[1] Truy cập trang Login để khởi tạo Session...');
+        const getResp = await session.get(LOGIN_URL);
 
-        const { token, captchaUrl } = extractSecurityTokens(getResp.data);
-
-        if (captchaUrl) {
-            console.log(`[!] Phát hiện URL Mã bảo mật/Captcha: ${captchaUrl}`);
-        }
+        const { token } = extractFormInputs(getResp.data);
+        console.log(`[2] CSRF Token thu được: ${token ? 'Có' : 'Không tìm thấy'}`);
 
         const formData = new URLSearchParams();
         formData.append('username', USERNAME);
         formData.append('password', PASSWORD);
-        
-        if (token) {
-            formData.append('_token', token);
-        }
-
-        if (SECURITY_CODE) {
-            formData.append('security_code', SECURITY_CODE);
-            formData.append('captcha', SECURITY_CODE);
-            formData.append('code', SECURITY_CODE);
-        }
-
-        formData.append('action', 'Login');
+        if (token) formData.append('_token', token);
 
         const headers = {
             'Referer': LOGIN_URL,
             'Origin': BASE_HOST,
-            'Content-Type': 'application/x-www-form-urlencoded'
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
         };
 
         console.log('[3] Gửi thông tin đăng nhập...');
         const loginResp = await session.post(LOGIN_URL, formData.toString(), { headers });
 
-        if (loginResp.status === 200 && !loginResp.data.includes('Invalid') && !loginResp.data.includes('sai')) {
+        // Kiểm tra xem sau khi login có bị đẩy lại trang login hoặc chứa từ khóa báo lỗi không
+        const isLoginPage = typeof loginResp.data === 'string' && (
+            loginResp.data.includes('name="password"') || 
+            loginResp.data.includes('login') ||
+            loginResp.data.includes('Invalid') ||
+            loginResp.data.includes('không chính xác')
+        );
+
+        if (!isLoginPage || loginResp.request.res.responseUrl.includes('/lobby') || loginResp.request.res.responseUrl.includes('/Room')) {
             console.log('[OK] Đăng nhập thành công!');
             return true;
         } else {
-            console.error('[X] Đăng nhập thất bại: Kiểm tra lại tài khoản hoặc mã bảo mật.');
+            console.error('[X] Đăng nhập thất bại! Server trả về lại trang Login (Kiểm tra lại Tài khoản/Mật khẩu).');
             return false;
         }
     } catch (error) {
@@ -112,22 +95,7 @@ async function login() {
 }
 
 // ======================
-// CHUYỂN HƯỚNG VÀO LOBBY
-// ======================
-async function goToLobby() {
-    try {
-        console.log('[4] Kích hoạt phiên làm việc (Room & Lobby)...');
-        await session.get(BASE, { headers: { 'Referer': LOGIN_URL } });
-        await session.get(LOBBY_URL, { headers: { 'Referer': BASE } });
-        return true;
-    } catch (error) {
-        console.error('Lỗi Lobby:', error.message);
-        return false;
-    }
-}
-
-// ======================
-// CÀO DỮ LIỆU TẤT CẢ CÁC BÀN
+// LẤY DỮ LIỆU CÁC BÀN
 // ======================
 async function fetchBaccaratData() {
     try {
@@ -151,16 +119,17 @@ async function fetchBaccaratData() {
 
         let resData = resp.data;
 
-        // Xử lý nếu server trả về dạng String thay vì Object
-        if (typeof resData === 'string') {
-            try {
-                resData = JSON.parse(resData);
-            } catch (e) {
-                console.error('[!] Phản hồi từ server không phải định dạng JSON.');
-            }
+        // Nếu trả về HTML -> Session chưa được nhận diện hoặc bị logout
+        if (typeof resData === 'string' && resData.trim().startsWith('<')) {
+            console.error('[!] API trả về HTML thay vì JSON (Phiên đăng nhập hết hạn hoặc chưa vào đúng Lobby). Đang thử login lại...');
+            await login();
+            return baccaratData;
         }
 
-        // Tự động bóc tách mảng dữ liệu bàn
+        if (typeof resData === 'string') {
+            try { resData = JSON.parse(resData); } catch (e) {}
+        }
+
         let rawList = [];
         if (Array.isArray(resData)) {
             rawList = resData;
@@ -168,25 +137,21 @@ async function fetchBaccaratData() {
             if (Array.isArray(resData.data)) rawList = resData.data;
             else if (Array.isArray(resData.list)) rawList = resData.list;
             else if (Array.isArray(resData.rooms)) rawList = resData.rooms;
-            else if (Array.isArray(resData.result)) rawList = resData.result;
             else {
-                // Thử tìm thuộc tính kiểu mảng đầu tiên
-                const firstArrayKey = Object.keys(resData).find(key => Array.isArray(resData[key]));
-                if (firstArrayKey) rawList = resData[firstArrayKey];
+                const firstArrKey = Object.keys(resData).find(k => Array.isArray(resData[k]));
+                if (firstArrKey) rawList = resData[firstArrKey];
             }
         }
 
         if (rawList.length > 0) {
             baccaratData = rawList.map((item, index) => ({
-                table: item.table_name || item.tableName || item.table || item.name || `Bàn ${index + 1}`,
+                table: item.table_name || item.tableName || item.table || `Bàn ${index + 1}`,
                 result: item.result || item.history || item.data || '',
                 shoeId: item.shoeId || item.shoe_id || '',
                 round: item.round || item.roundNo || '',
-                raw: item // Lưu trữ toàn bộ dữ liệu gốc của bàn
+                raw: item
             }));
             lastUpdate = new Date().toISOString();
-        } else {
-            console.log('[!] Server phản hồi thành công nhưng không có bàn nào:', JSON.stringify(resData).substring(0, 150));
         }
 
         return baccaratData;
@@ -196,7 +161,6 @@ async function fetchBaccaratData() {
     }
 }
 
-// Vòng lặp cập nhật dữ liệu liên tục
 async function autoUpdate() {
     while (true) {
         await fetchBaccaratData();
@@ -205,7 +169,7 @@ async function autoUpdate() {
 }
 
 // ======================
-// EXPRESS API SERVER
+// SERVER EXPRESS API
 // ======================
 const app = express();
 
@@ -215,7 +179,6 @@ app.use((req, res, next) => {
     next();
 });
 
-// API Lấy toàn bộ bàn
 app.get('/api/baccarat', (req, res) => {
     res.json({
         success: true,
@@ -225,46 +188,39 @@ app.get('/api/baccarat', (req, res) => {
     });
 });
 
-// API Lấy theo tên/mã bàn cụ thể
 app.get('/api/baccarat/:table', (req, res) => {
     const tableName = String(req.params.table).toLowerCase();
     const found = baccaratData.find(item => String(item.table).toLowerCase() === tableName);
-
-    if (found) {
-        res.json({ success: true, data: found });
-    } else {
-        res.status(404).json({ success: false, message: `Không tìm thấy bàn ${req.params.table}` });
-    }
+    if (found) res.json({ success: true, data: found });
+    else res.status(404).json({ success: false, message: `Không tìm thấy bàn ${req.params.table}` });
 });
 
 // ======================
-// KHỞI ĐỘNG CHƯƠNG TRÌNH
+// KHỞI ĐỘNG
 // ======================
 async function start() {
     console.log('========================================');
-    console.log('BACCARAT DATA CRAWLER & API SERVER');
+    console.log('BACCARAT CRAWLER SERVER');
     console.log('========================================');
 
     const ok = await login();
     if (!ok) {
-        console.error('[X] Không thể đăng nhập vào hệ thống.');
+        console.error('[X] Không thể đăng nhập. Dừng chương trình.');
         process.exit(1);
     }
 
-    await goToLobby();
-    
-    console.log('[5] Tiến hành cào dữ liệu lần đầu...');
-    const data = await fetchBaccaratData();
-    console.log(`[OK] Đã lấy thành công dữ liệu của ${data.length} bàn.`);
+    // Truy cập Lobby để xác nhận Cookie
+    await session.get(LOBBY_URL, { headers: { 'Referer': BASE } });
 
-    // Chạy tự động cập nhật ngầm
+    console.log('[4] Tiến hành lấy dữ liệu bàn...');
+    const data = await fetchBaccaratData();
+    console.log(`[OK] Lấy thành công ${data.length} bàn.`);
+
     autoUpdate();
 
-    // Khởi chạy Express Server
     const PORT = process.env.PORT || 5000;
     app.listen(PORT, '0.0.0.0', () => {
-        console.log(`\n🚀 API đã sẵn sàng tại port: ${PORT}`);
-        console.log(`👉 Link API All: http://localhost:${PORT}/api/baccarat`);
+        console.log(`🚀 Server đang chạy tại port: ${PORT}`);
     });
 }
 
