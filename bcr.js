@@ -5,13 +5,13 @@ const https = require('https');
 // ======================
 // CẤU HÌNH
 // ======================
-const BASE = "https://aibcr.me";
+const BASE = "http://hackbacarat.com/?fbclid=IwVERDUATS_JpwZG9mAWZkaWQWULRO_sGKtEi8_ql4lS0laatjoMezrmV4dG4DYWVtAjEwAHNydGMGYXBwX2lkCjY2Mjg1NjgzNzkAAR6sWvdxyrb5c9KeYO_rMMWwpKgUOsIsi29A65FPMRLNu2KeLAZBZVfUkAp3tA_aem_FQgYmwZZ0fK85bp06ljJ1A";
 const LOGIN_URL = `${BASE}/login`;
 const LOBBY_URL = `${BASE}/ae/lobby`;
 const GETNEWRESULT_URL = `${BASE}/baccarat/getnewresult`;
 
-const USERNAME = "tiendatoce1232";
-const PASSWORD = "tiendatoceee1";
+const USERNAME = "Hoang2285";
+const PASSWORD = "hoang2010";
 
 const agent = new https.Agent({ rejectUnauthorized: false });
 let cookieJar = '';
