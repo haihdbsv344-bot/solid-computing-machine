@@ -17,6 +17,7 @@ const agent = new https.Agent({ rejectUnauthorized: false });
 let cookieJar = '';
 let baccaratData = [];
 let lastUpdate = null;
+let isLoggedIn = false;
 
 // ======================
 // SESSION AXIOS
@@ -26,13 +27,13 @@ const session = axios.create({
     timeout: 30000,
     httpsAgent: agent,
     headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         'Accept-Language': 'vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7'
     }
 });
 
-// Interceptor lưu cookie
+// Interceptor quản lý Cookie
 session.interceptors.request.use(config => {
     if (cookieJar) config.headers.Cookie = cookieJar;
     return config;
@@ -53,10 +54,12 @@ session.interceptors.response.use(res => {
 });
 
 // ======================
-// LẤY CSRF TOKEN
+// BÓC TÁCH CSRF TOKEN
 // ======================
 function getCsrfToken(html) {
-    const match = html.match(/<meta\s+name="csrf-token"\s+content="([^"]+)"/);
+    if (typeof html !== 'string') return null;
+    const match = html.match(/<meta\s+name="csrf-token"\s+content="([^"]+)"/i) ||
+                  html.match(/name="_token"\s+value="([^"]+)"/i);
     return match ? match[1] : null;
 }
 
@@ -65,13 +68,14 @@ function getCsrfToken(html) {
 // ======================
 async function login() {
     try {
+        console.log('[1] Đang lấy CSRF token từ trang Login...');
         const getResp = await session.get(LOGIN_URL);
         const token = getCsrfToken(getResp.data);
         
         const formData = new URLSearchParams();
         formData.append('username', USERNAME);
         formData.append('password', PASSWORD);
-        formData.append('_token', token);
+        if (token) formData.append('_token', token);
         formData.append('action', 'Login');
         
         const headers = {
@@ -80,10 +84,22 @@ async function login() {
             'Content-Type': 'application/x-www-form-urlencoded'
         };
         
+        console.log('[2] Gửi dữ liệu đăng nhập...');
         const loginResp = await session.post(LOGIN_URL, formData.toString(), { headers });
-        return loginResp.status === 200;
+        
+        // Kiểm tra xem phản hồi có thành công không
+        if (loginResp.status === 200) {
+            isLoggedIn = true;
+            console.log('[OK] Đăng nhập thành công');
+            return true;
+        } else {
+            isLoggedIn = false;
+            console.error('[X] Đăng nhập không thành công.');
+            return false;
+        }
     } catch (error) {
         console.error('Login error:', error.message);
+        isLoggedIn = false;
         return false;
     }
 }
@@ -105,8 +121,14 @@ async function goToLobby() {
 // LẤY KẾT QUẢ BACCARAT
 // ======================
 async function fetchBaccaratData() {
+    // Nếu chưa đăng nhập thành công, tự động thử đăng nhập lại
+    if (!isLoggedIn) {
+        const ok = await login();
+        if (!ok) return [];
+        await goToLobby();
+    }
+
     try {
-        // Lấy XSRF token từ cookie
         let xsrfToken = '';
         const xsrfMatch = cookieJar.match(/XSRF-TOKEN=([^;]+)/);
         if (xsrfMatch) xsrfToken = decodeURIComponent(xsrfMatch[1]);
@@ -124,6 +146,13 @@ async function fetchBaccaratData() {
         
         const resp = await session.post(GETNEWRESULT_URL, formData.toString(), { headers });
         
+        // Nếu response trả về dạng HTML nghĩa là Cookie/Session hết hạn -> reset trạng thái đăng nhập
+        if (typeof resp.data === 'string' && resp.data.trim().startsWith('<')) {
+            console.log('[!] Session hết hạn, sẽ tự động tái đăng nhập ở lượt tiếp theo...');
+            isLoggedIn = false;
+            return [];
+        }
+
         if (resp.data && resp.data.data) {
             baccaratData = resp.data.data.map(item => ({
                 table: item.table_name,
@@ -156,14 +185,12 @@ async function autoUpdate() {
 // ======================
 const app = express();
 
-// CORS cho phép gọi từ frontend
 app.use((req, res, next) => {
     res.header('Access-Control-Allow-Origin', '*');
     res.header('Access-Control-Allow-Headers', '*');
     next();
 });
 
-// API lấy tất cả bàn
 app.get('/api/baccarat', (req, res) => {
     res.json({
         success: true,
@@ -173,7 +200,6 @@ app.get('/api/baccarat', (req, res) => {
     });
 });
 
-// API lấy theo bàn cụ thể (vd: /api/baccarat/1 hoặc /api/baccarat/C01)
 app.get('/api/baccarat/:table', (req, res) => {
     const tableName = req.params.table;
     const found = baccaratData.find(item => item.table === tableName);
@@ -185,7 +211,6 @@ app.get('/api/baccarat/:table', (req, res) => {
     }
 });
 
-// API lấy kết quả mới nhất
 app.get('/api/latest', (req, res) => {
     const latest = [...baccaratData].sort((a, b) => {
         const numA = parseInt(a.table) || 0;
@@ -196,48 +221,21 @@ app.get('/api/latest', (req, res) => {
 });
 
 // ======================
-// KHỞI ĐỘNG
+// KHỞI ĐỘNG SERVER
 // ======================
-async function start() {
+function start() {
     console.log('========================================');
     console.log('BACCARAT API SERVER');
     console.log('========================================');
     
-    console.log('[1] Đang đăng nhập...');
-    const loginOk = await login();
-    if (!loginOk) {
-        console.error('[ERROR] Đăng nhập thất bại!');
-        process.exit(1);
-    }
-    console.log('[OK] Đăng nhập thành công');
+    const PORT = process.env.PORT || 5000;
     
-    console.log('[2] Vào lobby...');
-    await goToLobby();
-    console.log('[OK] Vào lobby thành công');
-    
-    console.log('[3] Lấy dữ liệu lần đầu...');
-    await fetchBaccaratData();
-    console.log(`[OK] Đã lấy ${baccaratData.length} bàn`);
-    
-    // Hiển thị danh sách bàn
-    console.log('\n📊 DANH SÁCH BÀN:');
-    baccaratData.forEach(item => {
-        const resultShort = item.result.substring(0, 30) + (item.result.length > 30 ? '...' : '');
-        console.log(`   ${item.table.padEnd(4)}: ${resultShort}`);
-    });
-    
-    // Chạy auto update background
-    autoUpdate();
-    
-    // Khởi động server
-    const PORT = 5000;
+    // Mở port Express trước để Render kiểm tra Health Check thành công
     app.listen(PORT, '0.0.0.0', () => {
-        console.log(`\n🚀 API SERVER ĐANG CHẠY:`);
-        console.log(`   http://localhost:${PORT}/api/baccarat`);
-        console.log(`   http://localhost:${PORT}/api/baccarat/1`);
-        console.log(`   http://localhost:${PORT}/api/baccarat/C01`);
-        console.log(`   http://localhost:${PORT}/api/latest`);
-        console.log(`\n⏰ Auto update mỗi 2 giây`);
+        console.log(`\n🚀 API SERVER ĐANG CHẠY TẠI PORT: ${PORT}`);
+        
+        // Tiến hành chạy ngầm vòng lặp cập nhật
+        autoUpdate();
     });
 }
 
