@@ -237,7 +237,7 @@ async function start() {
         console.log(`   http://localhost:${PORT}/api/baccarat/1`);
         console.log(`   http://localhost:${PORT}/api/baccarat/C01`);
         console.log(`   http://localhost:${PORT}/api/latest`);
-        console.log(`\n⏰ Auto update mỗi 2 giây`);
+        console.log(`\n⏰ Auto update mỗi 1 giây`);
     });
 }
 
