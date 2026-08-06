@@ -12,8 +12,9 @@ const LOGIN_URL = `${BASE}/login`;
 const LOBBY_URL = `${BASE}/ae/lobby`;
 const GETNEWRESULT_URL = `${BASE}/baccarat/getnewresult`;
 
-const USERNAME = "Hoang2285";
-const PASSWORD = "hoang2010";
+// Khuyên dùng biến môi trường Environment Variables trên Render để bảo mật
+const USERNAME = process.env.AIBCR_USER || "Hoang2285";
+const PASSWORD = process.env.AIBCR_PASS || "hoang2010";
 
 const agent = new https.Agent({ rejectUnauthorized: false });
 let cookieJar = '';
@@ -156,4 +157,23 @@ function CT6_212(arr) {
 
 function CT7_Chop(arr) {
     if (arr.length < 8) return null;
-    const
+    const runs = timChuoi(arr);
+    if (runs.length >= 3) {
+        const last3 = runs.slice(-3);
+        if (last3[0].n === 3 && last3[1].n === 2 && last3[2].n === 1) {
+            return { predict: last3[2].c === 'B' ? 'P' : 'B', name: 'Cau Chop 3-2-1', conf: 85 };
+        }
+    }
+    return null;
+}
+
+// ============================================================
+// KHỞI TẠO SERVER & ROUTE KHỞI ĐỘNG
+// ============================================================
+app.get('/', (req, res) => {
+    res.json({ status: 'Server running', lastUpdate });
+});
+
+app.listen(PORT, () => {
+    console.log(`Server đang lắng nghe tại cổng ${PORT}`);
+});
